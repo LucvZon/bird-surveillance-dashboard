@@ -45,7 +45,7 @@ jobs:
           packages: any::tidyverse, any::sf, any::plotly, any::dbscan, any::lubridate, any::forcats
 
       - name: Render Quarto Dashboard
-        run: quarto render --to html
+        run: quarto render
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
