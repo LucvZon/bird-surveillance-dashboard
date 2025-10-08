@@ -45,7 +45,7 @@ jobs:
           packages: any::tidyverse, any::sf, any::plotly, any::dbscan, any::lubridate, any::forcats
 
       - name: Render Quarto Dashboard
-        run: quarto render
+        run: quarto render --to html
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -54,7 +54,7 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           # This path must match Quarto's default output directory
-          path: ./
+          path: ./_site
 
       - name: Deploy to GitHub Pages
         id: deployment
