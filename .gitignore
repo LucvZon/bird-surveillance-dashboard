@@ -1,0 +1,9 @@
+# .gitignore
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Quarto project files
+/_site/
+/.quarto/

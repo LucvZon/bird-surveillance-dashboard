@@ -1,0 +1,244 @@
+---
+title: "Bird Surveillance Dashboard"
+format:
+  dashboard:
+    nav-buttons: [github]
+    github: https://github.com/LucvZon/EcoAlert
+    embed-resources: true
+theme: cosmo
+logo: "images/Erasmus.png"
+---
+
+```{r setup, include = FALSE, message = FALSE, warning = FALSE, echo = FALSE}
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(forcats)
+library(dbscan)
+library(purrr)
+library(plotly)
+library(lubridate)
+library(tidyr)
+
+# Import data -------------------------------------------------------------
+df_fa <- read.csv(
+  file = "data/S-BSST1522_SV_FA/Surveillance_Arbovirus_LiveBirds_Netherlands_2016-2022.csv",
+  header = TRUE, sep = ",", fill = TRUE, stringsAsFactors = FALSE
+  ) %>%
+  dplyr::mutate(capture.date = as.Date(capture.date))
+
+# Map of the Netherlands --------------------------------------------------
+nl_map <- sf::st_read(file.path("data/map/gadm41_NLD_1.shp")) %>%
+  dplyr::filter(TYPE_1 != 'Water body')
+
+# Base layer for maps
+base_map <- ggplot() +
+  geom_sf(data = nl_map, fill = "ivory", color = "gray30", linewidth = 0.3) +
+  coord_sf(datum = st_crs(nl_map), expand = FALSE) +
+  theme_void() + # A cleaner starting point than building from theme()
+  theme(
+    plot.title = element_text(hjust = 0.5), # Center the title
+    panel.background = element_rect(fill = "transparent", color = NA),
+    plot.background = element_rect(fill = "transparent", color = NA)
+  )
+
+# Clustering function -----------------------------------------------------
+#' Function to perform dbscan clustering on spatial points
+#'
+#' @param data A dataframe with 'Long' and 'Lat' columns.
+#' @param eps The distance threshold for dbscan (in decimal degrees).
+#' @param minPts The minimum number of points to form a cluster.
+#' @return A summarized dataframe with representative lat/long and cluster size.
+cluster_and_summarize <- function(data, eps = 0.15, minPts = 1) {
+  # Ensure there's data to process
+  if (nrow(data) == 0) return(NULL)
+  
+  # Select coordinate columns
+  coords <- data %>% select(Long, Lat)
+  
+  # Perform dbscan clustering
+  clusters <- dbscan(coords, eps = eps, minPts = minPts)
+  
+  # Add cluster assignments to the data
+  # dbscan's cluster 0 represents noise points, we'll treat them as individual clusters
+  data$cluster_id <- clusters$cluster
+  
+  # Summarize each cluster
+  summary_df <- data %>%
+    group_by(cluster_id) %>%
+    summarise(
+      # Calculate the centroid (mean location) for the representative point
+      Long_rep = mean(Long),
+      Lat_rep = mean(Lat),
+      # Count the number of birds in the cluster
+      cluster_size = n(),
+      .groups = 'drop'
+    )
+  
+  return(summary_df)
+}
+
+cluster_by_group <- function(data, group_col, eps) {
+  # Uses the powerful nest/map/unnest pattern
+  data %>%
+    group_by({{ group_col }}) %>%
+    nest() %>% # Creates a list-column with data for each group
+    mutate(clustered_data = map(data, ~cluster_and_summarize(.x, eps))) %>%
+    select(-data) %>%
+    unnest(clustered_data) %>%
+    ungroup()
+}
+
+# Total Map Data
+total_clustered_df <- cluster_and_summarize(df_fa, eps = 0.04)
+
+# Family Map Data
+df_fa_processed <- df_fa %>%
+  mutate(family_cat = fct_lump_n(family, n = 7, other_level = "Other"))
+
+family_clustered_df <- cluster_by_group(df_fa_processed, group_col = family_cat, eps = 0.15)
+
+# USUV Map Data
+usuv_pos_clustered_df <- df_fa %>%
+  filter(BirdUSUV == 1) %>%
+  cluster_and_summarize(eps = 0.04)
+
+# Virus Barplot Data
+monthly_positives <- df_fa %>%
+  filter(BirdUSUV == 1 | BirdWNV == 1) %>%
+  pivot_longer(
+    cols = c(BirdUSUV, BirdWNV), 
+    names_to = "Virus", 
+    values_to = "Status"
+  ) %>%
+  filter(Status == 1) %>%
+  mutate(Virus = sub("Bird", "", Virus)) %>%
+  mutate(month_start = floor_date(capture.date, "month")) %>%
+  count(month_start, Virus, name = "sample_count")
+
+# Total Sampling Barplot Data
+monthly_samples <- df_fa %>%
+  mutate(month_start = floor_date(capture.date, "month")) %>%
+  count(month_start, class, name = "sample_count")
+```
+
+
+# Spatial Overview
+
+## Row
+
+### Total captures
+
+```{r total_captures, message = FALSE, warning = FALSE, echo = FALSE}
+#| title: "All Bird Capture Locations, 2016-2022"
+
+total_map <- base_map +
+  geom_point(
+    data = total_clustered_df,
+    aes(
+      x = Long_rep, y = Lat_rep, size = cluster_size,
+      text = paste("Number of Birds:", cluster_size)
+    ),
+    fill = "steelblue", alpha = 0.6, shape = 21, color = "black", stroke = 0.4
+  ) +
+  scale_size_continuous(name = "Number of Birds", range = c(1, 10)) +
+  labs(title = " ")
+
+ggplotly(total_map, tooltip = "text") %>%
+  layout(
+    xaxis = list(autorange = TRUE),
+    yaxis = list(autorange = TRUE),
+    margin = list(l = 0, r = 0, b = 0, t = 20, pad = 0)
+  )
+```
+
+### Captures by Family
+
+```{r family_captures, message = FALSE, warning = FALSE, echo = FALSE}
+#| title: "Captures by Bird Family, 2016-2022"
+
+family_map <- base_map +
+  geom_point(
+    data = family_clustered_df,
+    aes(
+      x = Long_rep, y = Lat_rep, size = cluster_size, fill = family_cat,
+      text = paste("Family:", family_cat, "<br>Number of Birds:", cluster_size)
+    ),
+    alpha = 0.75, shape = 21, color = "black", stroke = 0.4
+  ) +
+  scale_size_continuous(name = "Number of Birds", range = c(1, 10)) +
+  scale_fill_brewer(name = "Bird Family", palette = "Set1") +
+  labs(title = " ")
+
+ggplotly(family_map, tooltip = "text") %>%
+  layout(
+    xaxis = list(autorange = TRUE),
+    yaxis = list(autorange = TRUE),
+    margin = list(l = 0, r = 0, b = 0, t = 20, pad = 0)
+  )
+```
+
+# Virus Surveillance
+
+## Row
+
+### USUV Positive Birds
+
+```{r usuv_map, message = FALSE, warning = FALSE, echo = FALSE}
+#| title: "Geographic Distribution of USUV Positive Birds, 2016-2022"
+
+usuv_map <- base_map +
+  geom_point(
+    data = usuv_pos_clustered_df,
+    aes(
+      x = Long_rep, y = Lat_rep, size = cluster_size,
+      text = paste("Number of Birds:", cluster_size)
+    ),
+    fill = "firebrick", alpha = 0.75, shape = 21, color = "black", stroke = 0.4
+  ) +
+  scale_size_continuous(name = "Number of Birds", range = c(2, 16)) +
+  labs(title = " ")
+
+ggplotly(usuv_map, tooltip = "text") %>%
+  layout(
+    xaxis = list(autorange = TRUE),
+    yaxis = list(autorange = TRUE),
+    margin = list(l = 0, r = 0, b = 0, t = 20, pad = 0)
+  )
+```
+
+### Monthly Virus Detections
+
+```{r virus_bar, message = FALSE, warning = FALSE, echo = FALSE}
+#| title: "Monthly Detections of USUV and WNV"
+
+virus_bar <- ggplot(monthly_positives, aes(x = month_start, y = sample_count, fill = Virus)) +
+  geom_col(width = 25) +
+  scale_fill_manual(values = c("USUV" = "firebrick", "WNV" = "orange")) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") + # Simplified breaks
+  labs(title = "", x = "Month", y = "Count") +
+  theme_light()
+
+ggplotly(virus_bar)
+```
+
+
+# Sampling Effort
+
+### Monthly Sampling by Bird Type
+
+```{r sampling_effort, message = FALSE, warning = FALSE, echo = FALSE}
+#| title: "Total Birds Sampled Per Month"
+
+monthly_bar <- ggplot(monthly_samples, aes(x = month_start, y = sample_count, fill = class)) +
+  geom_col(width = 25) +
+  scale_fill_manual(
+    name = "Bird Type",
+    values = c("landbirds" = "lightblue", "waterbirds" = "palegreen4")
+  ) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(title = "", x = "Month", y = "Count") +
+  theme_light()
+
+ggplotly(monthly_bar)
+```
